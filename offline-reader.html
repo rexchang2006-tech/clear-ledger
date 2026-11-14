@@ -1,0 +1,68 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>清晰记账 · 永久离线查看器</title><style>body{font:16px system-ui,sans-serif;color:#203d40;background:#f3f7f5;margin:0;padding:24px;max-width:1100px;margin:auto}h1{font-size:24px}input,select,button{font:inherit;padding:10px;margin:6px;border:1px solid #a4beb5;border-radius:7px;background:white}table{border-collapse:collapse;width:100%;background:white;font-size:14px}td,th{padding:10px;border:1px solid #dce7e3;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}.scroll{overflow:auto}.totals{background:#dbece3;padding:15px;margin:15px 0;border-radius:10px}#error{color:#a33;white-space:pre-wrap}.note{font-size:14px;line-height:1.7;color:#5d7475}footer{margin-top:25px;font-size:12px;color:#637c70}</style><h1>清晰记账 · 离线查看器</h1><p class="note">这个文件包含全部查看代码。可直接双击打开，无需网站、网络、账号或 AI 服务。只读取你选择的 JSON，不会修改原文件或上传账目。</p><input id="pick" type="file" accept=".json,application/json"><div id="error"></div><div id="body"></div><footer>MIT License · 格式 v4 / 旧版 v1–v3 · 金额精确到分，币种各自统计。</footer><script>/* Clear Ledger 2.0 - MIT licensed, no dependencies. Amounts are integer cents. */
+(function(root){'use strict';
+ const FORMAT='clear-ledger', VERSION=4, LIMIT=999999999999, MAXTOTAL=9000000000000000;
+ const clone=x=>JSON.parse(JSON.stringify(x));
+ const canonical=x=>x===null?'null':Array.isArray(x)?'['+x.map(canonical).join(',')+']':typeof x==='object'?'{'+Object.keys(x).sort().map(k=>JSON.stringify(k)+':'+canonical(x[k])).join(',')+'}':JSON.stringify(x);
+ const uuid=()=>crypto.randomUUID?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),v=>v.toString(16).padStart(2,'0')).join('');
+ const today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ const currencies=a=>a==='mine'?['CNY','MOP','HKD','USD']:['CNY','MOP','HKD'];
+ const names={CNY:'人民币',MOP:'澳门元',HKD:'港币',USD:'美元'},accountName=a=>a==='mine'?'我的账本':'爸妈共同账本';
+ const code=c=>c==='CNY'?'RMB':c;
+ function assert(ok,msg){if(!ok)throw Error(msg);}
+ function money(c){return (c===0?0:c/100).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});}
+ function amount(s){assert(/^\d{1,10}(\.\d{1,2})?$/.test(String(s).trim()),'金额最多两位小数，请输入正数。');let [a,b='']=String(s).trim().split('.');let n=Number(a)*100+Number((b+'00').slice(0,2));assert(n>0&&n<=LIMIT,'金额超出允许范围。');return n;}
+ function dateValid(s){return typeof s==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(s)&&s>='1900-01-01'&&s<=today()&&!isNaN(Date.parse(s))&&new Date(s).toISOString().slice(0,10)===s;}
+ function key(o){return o.account+'|'+o.entity+'|'+o.recordId;}
+ const seed=()=>({id:'seed-mine-self-v1',account:'mine',entity:'person',recordId:'self',parents:[],deleted:false,value:{name:'我'},at:'2000-01-01T00:00:00.000Z',device:'初始账户'});
+ function empty(){return {format:FORMAT,version:VERSION,ledgerId:uuid(),ops:[seed()]};}
+ function validateValue(o){
+  assert(['parents','mine'].includes(o.account)&&['entry','person'].includes(o.entity),'账本或记录类型无效。');
+  assert(typeof o.recordId==='string'&&o.recordId.length>0&&o.recordId.length<=160,'记录编号无效。');
+  assert(typeof o.deleted==='boolean','删除标记无效。');
+  if(o.deleted){assert(o.value===null,'删除记录不能包含活动内容。');return;}
+  const v=o.value;assert(v&&typeof v==='object'&&!Array.isArray(v),'记录内容无效。');
+  if(o.entity==='person'){assert(Object.keys(v).length===1&&typeof v.name==='string'&&v.name.trim()===v.name&&v.name.length>0&&v.name.length<=40,'姓名为空或过长。');}
+  else{assert(Object.keys(v).sort().join(',')==='cents,currency,date,personId,reason','存取记录字段不完整。');assert(currencies(o.account).includes(v.currency),'不支持的币种。');assert(Number.isSafeInteger(v.cents)&&v.cents!==0&&Math.abs(v.cents)<=LIMIT,'金额无效或超出范围。');assert(dateValid(v.date),'记账日期无效或晚于今天。');assert(typeof v.personId==='string'&&v.personId.length<=160,'存入者编号无效。');assert(typeof v.reason==='string'&&v.reason.trim().length>0&&v.reason.length<=300,'请填写事由（最多 300 字）。');}
+ }
+ function inspect(doc){
+  assert(doc&&doc.format===FORMAT&&doc.version===VERSION,'不支持的账本格式或版本。');assert(typeof doc.ledgerId==='string'&&doc.ledgerId.length>0&&doc.ledgerId.length<=160,'账本身份无效。');assert(Array.isArray(doc.ops)&&doc.ops.length<=200000,'数据过大或记录列表无效。');
+  const map=new Map(),groups=new Map();
+  for(const o of doc.ops){assert(o&&typeof o.id==='string'&&o.id.length>0&&o.id.length<=200&&!map.has(o.id),'重复或无效的修订编号。');assert(Object.keys(o).sort().join(',')==='account,at,deleted,device,entity,id,parents,recordId,value','修订字段不完整。');assert(Array.isArray(o.parents)&&o.parents.length<=100&&new Set(o.parents).size===o.parents.length,'修订来源无效。');assert(typeof o.at==='string'&&!isNaN(Date.parse(o.at))&&typeof o.device==='string'&&o.device.length<=100,'修订时间或设备信息无效。');validateValue(o);map.set(o.id,o);if(!groups.has(key(o)))groups.set(key(o),[]);groups.get(key(o)).push(o);}
+  const used=new Set(),children=new Map(),degree=new Map();
+  for(const o of doc.ops){degree.set(o.id,o.parents.length);for(const p of o.parents){assert(typeof p==='string'&&map.has(p)&&key(map.get(p))===key(o)&&p!==o.id,'缺少来源修订，或来源属于其他记录。');used.add(p);if(!children.has(p))children.set(p,[]);children.get(p).push(o.id);}}
+  const queue=doc.ops.filter(o=>!o.parents.length).map(o=>o.id);let count=0;
+  for(let i=0;i<queue.length;i++){count++;for(const c of children.get(queue[i])||[]){degree.set(c,degree.get(c)-1);if(degree.get(c)===0)queue.push(c);}}
+  assert(count===doc.ops.length,'修订历史存在循环。');
+  const heads=new Map(),conflicts=[];
+  for(const [k,ops] of groups){const h=ops.filter(o=>!used.has(o.id));assert(h.length>0,'记录没有有效版本。');heads.set(k,h);if(h.length>1)conflicts.push({key:k,heads:h});}
+  return {map,heads,conflicts};
+ }
+ function materialize(doc){const info=inspect(doc),books={parents:{people:[],entries:[]},mine:{people:[],entries:[]}};for(const heads of info.heads.values()){if(heads.length!==1||heads[0].deleted)continue;const o=heads[0];books[o.account][o.entity==='person'?'people':'entries'].push({id:o.recordId,...clone(o.value)});}return {books,conflicts:info.conflicts};}
+ function validate(doc){const out=materialize(doc);assert(!out.conflicts.length,'存在未解决的同步冲突。');for(const a of ['parents','mine']){const b=out.books[a],people=new Set(b.people.map(p=>p.id));assert(new Set(b.people.map(p=>p.name.toLowerCase())).size===b.people.length,'存入者姓名重复，请先修正。');assert(a!=='mine'||b.people.length===1&&people.has('self'),'我的账本必须保留本人账户。');const sums=new Map();for(const e of b.entries){assert(people.has(e.personId),'记录引用的存入者不存在。');const k=e.personId+'|'+e.currency;if(!sums.has(k))sums.set(k,new Map());const days=sums.get(k);const n=(days.get(e.date)||0)+e.cents;assert(Number.isSafeInteger(n)&&Math.abs(n)<MAXTOTAL,'累计金额过大。');days.set(e.date,n);}for(const [k,days] of sums){let n=0;for(const [d,v] of [...days].sort((a,b)=>a[0].localeCompare(b[0]))){n+=v;assert(Number.isSafeInteger(n)&&Math.abs(n)<MAXTOTAL,'累计金额过大。');assert(n>=0,accountName(a)+'：'+k.split('|')[1]+' 在 '+d+' 的个人日终余额不足。');}}for(const c of currencies(a)){let total=b.entries.filter(e=>e.currency===c).reduce((n,e)=>n+Math.max(0,e.cents),0);assert(Number.isSafeInteger(total)&&total<MAXTOTAL,'币种总金额过大。');}}return out;}
+ function change(doc,account,entity,recordId,value,device='本机'){const d=clone(doc),i=inspect(d),k=account+'|'+entity+'|'+recordId;d.ops.push({id:uuid(),account,entity,recordId,parents:(i.heads.get(k)||[]).map(o=>o.id).sort(),deleted:value===null,value:clone(value),at:new Date().toISOString(),device});validate(d);return d;}
+ function resolve(doc,k,choice,device='本机'){const d=clone(doc),h=inspect(d).heads.get(k);assert(h&&h.length>1,'冲突已不存在。');const pick=h.find(o=>o.id===choice);assert(pick,'请选择一个版本。');d.ops.push({...clone(pick),id:uuid(),parents:h.map(o=>o.id).sort(),at:new Date().toISOString(),device});inspect(d);return d;}
+ function isBlank(d){return d.ops.every(o=>o.id==='seed-mine-self-v1');}
+ function merge(local,remote){inspect(local);inspect(remote);const d=clone(local);if(d.ledgerId!==remote.ledgerId){assert(isBlank(local),'这是不同来源的账本。请先备份当前账本，再用“完整恢复”迁移；首次同步须先导入电脑的备份。');d.ledgerId=remote.ledgerId;}
+  const map=new Map(d.ops.map(o=>[o.id,o]));let added=0;
+  for(const o of remote.ops){if(map.has(o.id))assert(canonical(map.get(o.id))===canonical(o),'相同修订编号对应不同内容，文件可能损坏；已停止导入。');else{d.ops.push(clone(o));map.set(o.id,o);added++;}}
+  const info=inspect(d);return {doc:d,added,conflicts:info.conflicts};
+ }
+ async function sha(s){const bytes=new TextEncoder().encode(s),hash=await crypto.subtle.digest('SHA-256',bytes);return Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,'0')).join('');}
+ function clean(d){return {format:FORMAT,version:VERSION,ledgerId:d.ledgerId,ops:clone(d.ops)};}
+ async function exportFile(d){validate(d);const data=clean(d);return JSON.stringify({...data,exportedAt:new Date().toISOString(),checksum:await sha(canonical(data))},null,2);}
+ async function parseFile(text){assert(typeof text==='string'&&text.length<60000000,'文件过大。');let d;try{d=JSON.parse(text);}catch{throw Error('文件不是有效 JSON。');}assert(d&&d.format===FORMAT,'请选择独立版导出的完整 JSON 文件；旧版账本请使用“导入旧账本”。');assert(typeof d.checksum==='string'&&d.checksum===await sha(canonical(clean(d))),'备份校验失败，文件不完整或被修改。');const c=clean(d);validate(c);return c;}
+ async function migrateLegacy(books){const d=empty();for(const b of books){assert(b&&[1,2,3].includes(b.Version)&&Array.isArray(b.People)&&Array.isArray(b.Entries),'旧账本格式无效。');const a=b.Version<3?'parents':b.AccountId;assert(['parents','mine'].includes(a),'旧账本类型无效。');
+  for(const p of b.People){if(a==='mine'&&p.Id==='self'&&p.Name==='我')continue;const o={account:a,entity:'person',recordId:p.Id,value:{name:p.Name},deleted:false,parents:a==='mine'&&p.Id==='self'?['seed-mine-self-v1']:[],at:'2000-01-01T00:00:00.000Z',device:'旧版迁移'};o.id='legacy-'+await sha(canonical(o));d.ops.push(o);}
+  for(const e of b.Entries){const o={account:a,entity:'entry',recordId:e.Id,value:{personId:e.PersonId,currency:e.Currency||'CNY',date:e.Date,cents:e.Cents,reason:e.Reason},deleted:false,parents:[],at:'2000-01-01T00:00:00.000Z',device:'旧版迁移'};o.id='legacy-'+await sha(canonical(o));d.ops.push(o);}}
+  validate(d);return d;
+ }
+ function balance(book,currency,date=today(),personId=null){return book.entries.filter(e=>e.currency===currency&&e.date<=date&&(!personId||e.personId===personId)).reduce((s,e)=>s+e.cents,0);}
+ function possibleDuplicates(doc){const b=materialize(doc).books,seen=new Set();let n=0;for(const a of ['parents','mine'])for(const e of b[a].entries){const k=a+canonical({personId:e.personId,currency:e.currency,date:e.date,cents:e.cents,reason:e.reason});if(seen.has(k))n++;seen.add(k);}return n;}
+ root.LedgerCore={FORMAT,VERSION,clone,canonical,uuid,today,currencies,names,code,accountName,money,amount,empty,inspect,materialize,validate,change,resolve,merge,sha,exportFile,parseFile,migrateLegacy,balance,isBlank,possibleDuplicates};
+ if(typeof module!=='undefined')module.exports=root.LedgerCore;
+})(typeof globalThis!=='undefined'?globalThis:this);
+</script><script>
+const C=LedgerCore,E=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));let loaded;
+document.getElementById('pick').onchange=async e=>{try{let text=await e.target.files[0].text(),raw=JSON.parse(text);if(raw.doc){loaded=raw.doc;C.validate(loaded);}else if(raw.format==='clear-ledger'){if(raw.checksum)loaded=await C.parseFile(text);else{C.validate(raw);loaded=raw;}}else loaded=await C.migrateLegacy([raw]);show();document.getElementById('error').textContent='';}catch(err){document.getElementById('error').textContent=err.message;}};
+function show(account='mine',currency='CNY',date=C.today()) {let b=C.materialize(loaded).books[account],entries=b.entries.filter(e=>e.currency===currency&&e.date<=date).sort((a,b)=>b.date.localeCompare(a.date));document.getElementById('body').innerHTML='<select id="account">'+['mine','parents'].map(a=>'<option value="'+a+'" '+(a===account?'selected':'')+'>'+C.accountName(a)+'</option>').join('')+'</select><select id="currency">'+C.currencies(account).map(c=>'<option value="'+c+'" '+(c===currency?'selected':'')+'>'+C.code(c)+' '+C.names[c]+'</option>').join('')+'</select><input id="date" type="date" value="'+date+'"><div class="totals">截至 '+date+' · '+C.code(currency)+' '+C.money(C.balance(b,currency,date))+' · 共 '+entries.length+' 笔</div><div class="scroll"><table><thead><tr><th>日期</th><th>存入者</th><th>币种</th><th>存入 / 取出</th><th>事由</th></tr></thead><tbody>'+entries.map(e=>'<tr><td>'+e.date+'</td><td>'+E(b.people.find(p=>p.id===e.personId)?.name)+'</td><td>'+e.currency+'</td><td>'+C.money(e.cents)+'</td><td>'+E(e.reason)+'</td></tr>').join('')+'</tbody></table></div>';document.getElementById('account').onchange=e=>show(e.target.value,'CNY',date);document.getElementById('currency').onchange=e=>show(account,e.target.value,date);document.getElementById('date').onchange=e=>show(account,currency,e.target.value||C.today());}
+</script></html>
